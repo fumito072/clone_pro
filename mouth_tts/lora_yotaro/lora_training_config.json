@@ -1,0 +1,19 @@
+{
+  "model_dir": "CosyVoice/pretrained_models/CosyVoice2-0.5B",
+  "sample_rate": 24000,
+  "batch_size": 1,
+  "learning_rate": 0.0001,
+  "num_epochs": 5,
+  "lora_rank": 8,
+  "lora_alpha": 16,
+  "lora_dropout": 0.1,
+  "gradient_accumulation_steps": 4,
+  "warmup_steps": 100,
+  "save_steps": 500,
+  "max_grad_norm": 1.0,
+  "speaker_name": "yotaro",
+  "training_date": "2025-11-03T17:10:42.949579",
+  "device": "mps",
+  "num_segments": 345,
+  "best_loss": 0.0
+}

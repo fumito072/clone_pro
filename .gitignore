@@ -1,17 +1,73 @@
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
 *.pyc
 *.pyo
 *.pyd
 .Python
-env/
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
 venv/
+env/
+ENV/
 .venv/
 *venv*/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# System files
 *.so
 *.dylib
 *.dll
+
+# Google Cloud credentials
+google_credentials.json
+**/google_credentials.json
+*.json.key
+service-account*.json
+
+# Audio files
+*.wav
+mouth_output_*.wav
+
+# Logs
 *.log
 /.mypy_cache/
 /.pytest_cache/
-.DS_Store
-.wav
+
+# Shell scripts (user-specific setup)
+*.sh
+
+# Model files (too large for git)
+*.pt
+*.onnx
+*.safetensors
+*.bin
+*.msgpack
+*.h5
+*.ckpt
+*.zip
+
+# Cache
+*.cache
+.cache/

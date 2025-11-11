@@ -1,0 +1,32 @@
+# CosyVoice LoRAファインチューニング用パッケージ
+# M4 Mac GPU (MPS) 対応
+
+# PyTorch (MPS対応版)
+torch>=2.0.0
+torchaudio>=2.0.0
+
+# 音声処理
+librosa>=0.10.0
+soundfile>=0.12.0
+
+# LoRA & Transformers
+peft>=0.7.0
+transformers>=4.35.0
+accelerate>=0.25.0
+
+# データ処理
+numpy>=1.24.0
+scipy>=1.11.0
+
+# ユーティリティ
+tqdm>=4.66.0
+
+# Google Cloud Speech-to-Text (文字起こし用)
+google-cloud-speech>=2.27.0
+google-auth>=2.29.0
+
+# CosyVoice用
+hyperpyyaml>=1.2.0
+modelscope>=1.9.0
+onnxruntime>=1.16.0
+tensorboard>=2.14.0

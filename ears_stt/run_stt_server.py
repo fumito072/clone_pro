@@ -1,57 +1,82 @@
 import asyncio
-import collections
+import os
 import threading
-import time
-
-import numpy as np
-import torch
+import queue
+from pathlib import Path
+from google.cloud import speech
+from google.oauth2 import service_account
+import pyaudio
 import websockets
-import webrtcvad
-from faster_whisper import WhisperModel
 from websockets.server import WebSocketServerProtocol
 
-try:
-    import pyaudio
-except ModuleNotFoundError as exc:
-    raise ModuleNotFoundError(
-        "PyAudio が見つかりませんでした。'pip install pyaudio' を実行し、"
-        "Homebrew を使っている場合は先に 'brew install portaudio' を入れてください。"
-    ) from exc
+# --- Google Cloud 認証情報の設定 ---
+# Application Default Credentials (ADC) を使用
+# gcloud auth application-default login で認証済みの場合は自動的に使用されます
+CREDENTIALS_PATH = Path(__file__).parent / "google_credentials.json"
 
-# --- Configuration ---
-MODEL_NAME = "medium"      # "tiny", "base", "small", "medium", "large-v3"
-LANGUAGE = "ja"         # Japanese
-SILENCE_THRESHOLD_MS = 100 # Stop transcribing after this much silence (in ms)
-VAD_AGGRESSIVENESS = 3  # How aggressive VAD is (0-3). 3 is most aggressive.
-SAMPLE_RATE = 16000     # Whisper requires 16kHz
-CHUNK_DURATION_MS = 30  # VAD requires 10, 20, or 30 ms chunks
-CHUNK_SAMPLES = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)
-CHUNK_BYTES = CHUNK_SAMPLES * 2  # 16-bit audio
+# JSONファイルがある場合はそれを優先、なければADCを使用
+if CREDENTIALS_PATH.exists():
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(CREDENTIALS_PATH)
+    print(f"✅ 認証情報ファイルを使用: {CREDENTIALS_PATH}")
+else:
+    print("ℹ️  Application Default Credentials (ADC) を使用します")
+    print("   ※ gcloud auth application-default login で認証済みであることを確認してください")
+
+# --- 音声設定 ---
+RATE = 16000  # Google Speech-to-Textの推奨サンプリングレート
+CHUNK = int(RATE / 10)  # 100ms
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
-ENERGY_RMS_THRESHOLD = 0.008  # Fallback sensitivity for quiet environments
 
-# Calculate how many audio chunks fit in our silence threshold
-SILENCE_CHUNKS = int(SILENCE_THRESHOLD_MS / CHUNK_DURATION_MS)
-
+# --- WebSocketクライアント管理 ---
 connected_clients: set[WebSocketServerProtocol] = set()
+listening_event = threading.Event()
+listening_event.set()  # 初期状態はリスニング中
 
 
 async def websocket_handler(websocket: WebSocketServerProtocol):
-    path = getattr(websocket, "path", "/")
-    if path != "/listen":
-        print(f"⚠️ [WS] /listen 以外のパスから接続されました: {path} @ {websocket.remote_address}")
     """
     /listen に接続したクライアント（コントローラー等）を登録し、
     接続が切れるまで待機する。
     """
+    path = getattr(websocket, "path", "/")
+    if path != "/listen":
+        print(f"⚠️  [WS] /listen 以外のパスから接続されました: {path} @ {websocket.remote_address}")
+    
     connected_clients.add(websocket)
     print(f"🔌 [WS] 接続: {websocket.remote_address}")
+    
     try:
-        await websocket.wait_closed()
+        # 接続確認メッセージ
+        await websocket.send("ACK: Connected to STT Server")
+        await websocket.send("STATE: LISTENING")
+        
+        async for message in websocket:
+            if not isinstance(message, str):
+                continue
+            
+            command = message.strip().upper()
+            
+            if command == "PAUSE_LISTENING":
+                if listening_event.is_set():
+                    print("⏸️  [WS] Listening paused by controller.")
+                    listening_event.clear()
+                    await websocket.send("STATE: PAUSED")
+            
+            elif command == "RESUME_LISTENING":
+                if not listening_event.is_set():
+                    print("▶️  [WS] Listening resumed by controller.")
+                    listening_event.set()
+                    await websocket.send("STATE: LISTENING")
+            
+            else:
+                print(f"ℹ️  [WS] 未対応のメッセージを受信: {message}")
+    
+    except websockets.exceptions.ConnectionClosed:
+        print(f"🔌 [WS] 接続が切断されました: {websocket.remote_address}")
     finally:
         connected_clients.discard(websocket)
-        print(f"🔌 [WS] 切断: {websocket.remote_address}")
+        print(f"🔌 [WS] 切断完了: {websocket.remote_address}")
 
 
 async def broadcast_text(text: str):
@@ -65,131 +90,202 @@ async def broadcast_text(text: str):
     for ws in list(connected_clients):
         try:
             await ws.send(text)
+            print(f"📤 [WS] 送信: '{text}' → {ws.remote_address}")
         except Exception as exc:
-            print(f"⚠️ [WS] 送信失敗: {exc}")
+            print(f"⚠️  [WS] 送信失敗: {exc}")
             disconnected.append(ws)
 
     for ws in disconnected:
         connected_clients.discard(ws)
 
 
-def transcription_worker(loop: asyncio.AbstractEventLoop, stop_event: threading.Event):
-    print("Loading VAD (Voice Activity Detection)...")
-    vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
-
-    print(f"Loading faster-whisper model '{MODEL_NAME}' for language '{LANGUAGE}'...")
-    # Use GPU if available (MPS on Mac), otherwise CPU
-    device_type = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device_type}")
-    model = WhisperModel(
-        MODEL_NAME,
-        device=device_type,
-        compute_type="float16" if device_type == "cuda" else "float32",
-    )
-    # --- Set up microphone stream ---
-    p = pyaudio.PyAudio()
-    stream = p.open(format=FORMAT,
-                    channels=CHANNELS,
-                    rate=SAMPLE_RATE,
-                    input=True,
-                    frames_per_buffer=CHUNK_SAMPLES)
-
-    print("\n🎤 Listening... (Speak, then pause for transcription. Ctrl+C to stop)")
+class SpeechToTextEngine:
+    """Google Cloud Speech-to-Text APIを使った音声認識エンジン"""
     
-    frames_buffer = collections.deque()
-    silence_counter = 0
-    is_speaking = False
+    def __init__(self):
+        # Google Cloud Speech クライアントの初期化
+        # JSONファイルがある場合はそれを使用、なければADCを使用
+        try:
+            if CREDENTIALS_PATH.exists():
+                credentials = service_account.Credentials.from_service_account_file(
+                    str(CREDENTIALS_PATH)
+                )
+                self.client = speech.SpeechClient(credentials=credentials)
+                print("✅ サービスアカウントキーで認証しました")
+            else:
+                # Application Default Credentials (ADC) を使用
+                self.client = speech.SpeechClient()
+                print("✅ Application Default Credentials (ADC) で認証しました")
+        except Exception as e:
+            print(f"⚠️  認証エラー: {e}")
+            print("⚠️  'gcloud auth application-default login' を実行してください")
+            self.client = None
+        
+        # ストリーミング設定
+        self.config = speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+            sample_rate_hertz=RATE,
+            language_code="ja-JP",
+            enable_automatic_punctuation=True,
+            model="latest_long",
+            use_enhanced=True,
+        )
+        
+        self.streaming_config = speech.StreamingRecognitionConfig(
+            config=self.config,
+            interim_results=False,  # 確定した結果のみ取得
+        )
+        
+        # PyAudioの初期化
+        self.audio = pyaudio.PyAudio()
+        self.stream = None
+        self.audio_queue = queue.Queue()
+        
+    def start_audio_stream(self):
+        """マイク入力ストリームを開始"""
+        if self.stream is None or not self.stream.is_active():
+            self.stream = self.audio.open(
+                format=FORMAT,
+                channels=CHANNELS,
+                rate=RATE,
+                input=True,
+                frames_per_buffer=CHUNK,
+                # macOS対応: コールバックを使わない
+                stream_callback=None,
+            )
+            self.stream.start_stream()
+            print("🎤 マイク入力を開始しました")
+    
+    def stop_audio_stream(self):
+        """マイク入力ストリームを停止"""
+        if self.stream is not None:
+            if self.stream.is_active():
+                self.stream.stop_stream()
+            self.stream.close()
+            self.stream = None
+            print("🎤 マイク入力を停止しました")
+    
+    def audio_generator(self):
+        """音声データをストリーミングで生成（ブロッキング読み取り）"""
+        while True:
+            # リスニングが一時停止中はスキップ
+            if not listening_event.is_set():
+                continue
+            
+            try:
+                # ブロッキングで音声データを読み取り
+                chunk = self.stream.read(CHUNK, exception_on_overflow=False)
+                yield chunk
+            except Exception as e:
+                print(f"⚠️  音声読み取りエラー: {e}")
+                break
+    
+    def process_responses(self, responses):
+        """Google Speech-to-Textからのレスポンスを処理"""
+        for response in responses:
+            if not response.results:
+                continue
+            
+            result = response.results[0]
+            if not result.alternatives:
+                continue
+            
+            transcript = result.alternatives[0].transcript.strip()
+            
+            if result.is_final and transcript:
+                print(f"✅ [STT] 認識完了: {transcript}")
+                yield transcript
+    
+    def cleanup(self):
+        """クリーンアップ処理"""
+        try:
+            self.stop_audio_stream()
+        except Exception as e:
+            print(f"⚠️  音声ストリーム停止エラー: {e}")
+        
+        try:
+            if self.audio:
+                self.audio.terminate()
+        except Exception as e:
+            print(f"⚠️  PyAudio終了エラー: {e}")
 
-    def is_speech(chunk: bytes) -> bool:
-        if vad.is_speech(chunk, SAMPLE_RATE):
-            return True
 
-        # Fallback: simple RMS energy check
-        audio = np.frombuffer(chunk, dtype=np.int16)
-        if audio.size == 0:
-            return False
-        rms = np.sqrt(np.mean((audio.astype(np.float32) / 32768.0) ** 2))
-        return rms > ENERGY_RMS_THRESHOLD
-
+def transcription_worker(loop: asyncio.AbstractEventLoop, stop_event: threading.Event):
+    """
+    音声認識を実行するワーカースレッド
+    """
+    print("🚀 Google Cloud Speech-to-Text エンジンを初期化中...")
+    
+    engine = SpeechToTextEngine()
+    
+    if engine.client is None:
+        print("⚠️  Google Cloud Speech クライアントが初期化されていません")
+        print("⚠️  ダミーモードで待機します（音声認識は行われません）")
+        stop_event.wait()
+        return
+    
+    print("✅ 初期化完了")
+    print("\n🎤 音声を待機中... (話しかけてください。Ctrl+Cで停止)")
+    
     try:
+        # マイク入力を開始
+        engine.start_audio_stream()
+        
         while not stop_event.is_set():
             try:
-                chunk = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
-            except OSError as err:
-                if err.errno == -9981:
-                    print("⚠️ Input overflow detected, skipping chunk...")
-                    time.sleep(0.01)
-                    continue
-                raise
-
-            if stop_event.is_set():
-                break
-            
-            # 1. Detect if this chunk is speech
-            is_speech_chunk = is_speech(chunk)
-
-            if is_speaking:
-                if is_speech_chunk:
-                    # Still speaking, keep recording
-                    frames_buffer.append(chunk)
-                    silence_counter = 0
-                else:
-                    # Was speaking, but now silent
-                    silence_counter += 1
-                    if silence_counter >= SILENCE_CHUNKS:
-                        # Reached silence threshold, time to transcribe
-                        print("Silence detected, transcribing...")
-                        
-                        # --- Transcribe the buffer ---
-                        audio_data = np.frombuffer(b''.join(frames_buffer), dtype=np.int16)
-                        audio_float = audio_data.astype(np.float32) / 32768.0
-                        
-                        segments, info = model.transcribe(audio_float, language=LANGUAGE, temperature=0)
-                        
-                        full_text = "".join(segment.text for segment in segments)
-                        print(f"==> [STT]: {full_text}\n")
-
-                        if full_text:
-                            asyncio.run_coroutine_threadsafe(
-                                broadcast_text(full_text),
-                                loop,
-                            )
-                        
-                        # Reset
-                        frames_buffer.clear()
-                        silence_counter = 0
-                        is_speaking = False
-            
-            elif is_speech_chunk:
-                # Just started speaking
-                print("Speech detected...")
-                is_speaking = True
-                frames_buffer.append(chunk)
-                silence_counter = 0
-
+                # 音声ストリームを生成
+                audio_generator = engine.audio_generator()
+                
+                # Google Speech-to-Text APIにリクエスト送信
+                requests = (
+                    speech.StreamingRecognizeRequest(audio_content=content)
+                    for content in audio_generator
+                )
+                
+                # ストリーミング認識を実行
+                responses = engine.client.streaming_recognize(
+                    engine.streaming_config, requests
+                )
+                
+                # レスポンスを処理
+                for transcript in engine.process_responses(responses):
+                    # 認識結果をWebSocketクライアントに送信
+                    asyncio.run_coroutine_threadsafe(
+                        broadcast_text(transcript),
+                        loop,
+                    )
+                
+            except Exception as exc:
+                if not stop_event.is_set():
+                    print(f"⚠️  [STT] エラーが発生しました: {exc}")
+                    print("🔄 [STT] 3秒後に再接続します...")
+                    stop_event.wait(timeout=3)
+    
     except KeyboardInterrupt:
-        print("\n🛑 Stopping...")
+        print("\n🛑 音声認識を停止中...")
     except Exception as exc:
-        print(f"\n🛑 STT Error: {exc}")
+        print(f"\n❌ [STT] 致命的なエラー: {exc}")
+        import traceback
+        traceback.print_exc()
     finally:
-        # Clean up
+        # クリーンアップ
         try:
-            if stream.is_active():
-                stream.stop_stream()
-        except OSError:
-            pass
-        stream.close()
-        p.terminate()
-        print("Done.")
+            engine.cleanup()
+            print("✅ 音声認識を終了しました")
+        except Exception as e:
+            print(f"⚠️  クリーンアップエラー: {e}")
 
 
 async def async_main():
+    """メイン処理"""
     loop = asyncio.get_running_loop()
     stop_event = threading.Event()
 
+    # WebSocketサーバーを起動
     server = await websockets.serve(websocket_handler, host="0.0.0.0", port=8001)
     print("🔌 WebSocketサーバーを起動しました: ws://0.0.0.0:8001/listen")
 
+    # 音声認識ワーカースレッドを起動
     worker = threading.Thread(
         target=transcription_worker,
         args=(loop, stop_event),
@@ -198,24 +294,39 @@ async def async_main():
     worker.start()
 
     try:
+        # サーバーを永続的に実行
         await asyncio.Future()
     except asyncio.CancelledError:
         pass
     finally:
+        print("\n🛑 サーバーをシャットダウン中...")
         stop_event.set()
-        server.close()
-        await server.wait_closed()
-        await asyncio.to_thread(worker.join)
+        
+        try:
+            server.close()
+            await server.wait_closed()
+        except Exception as e:
+            print(f"⚠️  サーバークローズエラー: {e}")
+        
+        # ワーカースレッドの終了を待機
+        try:
+            await asyncio.to_thread(worker.join, timeout=5)
+        except Exception as e:
+            print(f"⚠️  ワーカースレッド終了エラー: {e}")
+        
+        # 接続中のクライアントをクローズ
         for ws in list(connected_clients):
             try:
                 await ws.close()
             except Exception:
                 pass
         connected_clients.clear()
+        
+        print("✅ サーバーを終了しました")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(async_main())
     except KeyboardInterrupt:
-        print("\n🛑 Stopping...")
+        print("\n🛑 終了します...")
