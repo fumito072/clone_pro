@@ -22,6 +22,11 @@ ENV/
 .env
 .env.local
 .env.*.local
+.env.*
+.envrc
+
+!.env.example
+!**/.env.example
 
 # IDE
 .vscode/
@@ -45,6 +50,14 @@ google_credentials.json
 **/google_credentials.json
 *.json.key
 service-account*.json
+application_default_credentials.json
+**/application_default_credentials.json
+
+# Keys
+*.pem
+*.key
+id_rsa
+id_rsa.pub
 
 # Audio files
 *.wav
@@ -54,13 +67,25 @@ mouth_output_*.wav
 *.log
 /.mypy_cache/
 /.pytest_cache/
+/.ruff_cache/
+.coverage
+coverage.xml
+.python-version
+.tox/
 
-# Shell scripts (user-specific setup)
-*.sh
+# Local-only configs
+api_server/speaker_config.json
+mouth_tts/speakers_config.json
+
+# Temp
+**/temp/
+**/tmp/
 
 # Model files (too large for git)
 *.pt
 *.onnx
+*.tar.gz
+*.tgz
 *.safetensors
 *.bin
 *.msgpack

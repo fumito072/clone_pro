@@ -1,0 +1,21 @@
+{
+  "model_dir": "CosyVoice/pretrained_models/CosyVoice2-0.5B",
+  "sample_rate": 24000,
+  "batch_size": 1,
+  "learning_rate": 0.00001,
+  "num_epochs": 15,
+  "lora_rank": 8,
+  "lora_alpha": 16,
+  "lora_dropout": 0.05,
+  "gradient_accumulation_steps": 8,
+  "warmup_steps": 100,
+  "save_steps": 500,
+  "max_grad_norm": 5.0,
+  "speaker_name": "narisawa2",
+  "training_date": "2025-11-20",
+  "device": "cuda",
+  "num_segments": 266,
+  "train_llm": true,
+  "train_flow": true,
+  "comment": "LLM + Flow 2層学習版（266サンプル、25分音声）"
+}

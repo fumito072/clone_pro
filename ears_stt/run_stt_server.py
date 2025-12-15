@@ -2,6 +2,8 @@ import asyncio
 import os
 import threading
 import queue
+import time
+import audioop
 from pathlib import Path
 from google.cloud import speech
 from google.oauth2 import service_account
@@ -10,17 +12,26 @@ import websockets
 from websockets.server import WebSocketServerProtocol
 
 # --- Google Cloud 認証情報の設定 ---
-# Application Default Credentials (ADC) を使用
+# Application Default Credentials (ADC) を優先使用
 # gcloud auth application-default login で認証済みの場合は自動的に使用されます
 CREDENTIALS_PATH = Path(__file__).parent / "google_credentials.json"
 
-# JSONファイルがある場合はそれを優先、なければADCを使用
-if CREDENTIALS_PATH.exists():
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(CREDENTIALS_PATH)
-    print(f"✅ 認証情報ファイルを使用: {CREDENTIALS_PATH}")
+# JSONファイルがある場合のみ使用、なければADCを使用
+if CREDENTIALS_PATH.exists() and CREDENTIALS_PATH.stat().st_size > 0:
+    try:
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(CREDENTIALS_PATH)
+        print(f"✅ 認証情報ファイルを使用: {CREDENTIALS_PATH}")
+    except Exception as e:
+        print(f"⚠️  認証情報ファイルの読み込みに失敗: {e}")
+        print("ℹ️  Application Default Credentials (ADC) にフォールバック")
+        if "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
+            del os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
 else:
     print("ℹ️  Application Default Credentials (ADC) を使用します")
     print("   ※ gcloud auth application-default login で認証済みであることを確認してください")
+    # 環境変数をクリア（ADCを使うため）
+    if "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
+        del os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
 
 # --- 音声設定 ---
 RATE = 16000  # Google Speech-to-Textの推奨サンプリングレート
@@ -140,10 +151,70 @@ class SpeechToTextEngine:
         self.audio = pyaudio.PyAudio()
         self.stream = None
         self.audio_queue = queue.Queue()
+
+        # 入力デバイス選択（任意）
+        # - PYAUDIO_LIST_DEVICES=1 で一覧表示
+        # - PYAUDIO_INPUT_DEVICE_INDEX=3 のように index 指定
+        # - PYAUDIO_INPUT_DEVICE_NAME_CONTAINS="MacBook" のように部分一致指定
+        self.input_device_index = None
+        self._input_device_info = None
+
+        if os.getenv("PYAUDIO_LIST_DEVICES", "false").lower() in ("1", "true", "yes"):
+            try:
+                print("\n🎙️  [PyAudio] 入力デバイス一覧:")
+                for i in range(self.audio.get_device_count()):
+                    info = self.audio.get_device_info_by_index(i)
+                    if int(info.get("maxInputChannels", 0)) <= 0:
+                        continue
+                    name = info.get("name", "?")
+                    rate = info.get("defaultSampleRate", "?")
+                    ch = info.get("maxInputChannels", "?")
+                    print(f"  - index={i}: {name} (channels={ch}, defaultRate={rate})")
+                print("")
+            except Exception as e:
+                print(f"⚠️  [PyAudio] デバイス一覧の取得に失敗: {e}")
         
     def start_audio_stream(self):
         """マイク入力ストリームを開始"""
         if self.stream is None or not self.stream.is_active():
+            # デバイス選択
+            selected_index = None
+            index_env = os.getenv("PYAUDIO_INPUT_DEVICE_INDEX")
+            name_contains = os.getenv("PYAUDIO_INPUT_DEVICE_NAME_CONTAINS")
+
+            if index_env:
+                try:
+                    selected_index = int(index_env)
+                except ValueError:
+                    print(f"⚠️  [PyAudio] PYAUDIO_INPUT_DEVICE_INDEX が不正です: {index_env}")
+                    selected_index = None
+            elif name_contains:
+                needle = name_contains.lower()
+                try:
+                    for i in range(self.audio.get_device_count()):
+                        info = self.audio.get_device_info_by_index(i)
+                        if int(info.get("maxInputChannels", 0)) <= 0:
+                            continue
+                        if needle in str(info.get("name", "")).lower():
+                            selected_index = i
+                            break
+                except Exception as e:
+                    print(f"⚠️  [PyAudio] デバイス検索に失敗: {e}")
+
+            if selected_index is None:
+                try:
+                    selected_index = int(self.audio.get_default_input_device_info().get("index"))
+                except Exception:
+                    selected_index = None
+
+            self.input_device_index = selected_index
+            try:
+                if self.input_device_index is not None:
+                    self._input_device_info = self.audio.get_device_info_by_index(self.input_device_index)
+                    print(f"🎙️  [PyAudio] 入力デバイス: index={self.input_device_index} name={self._input_device_info.get('name','?')}")
+            except Exception as e:
+                print(f"⚠️  [PyAudio] 入力デバイス情報の取得に失敗: {e}")
+
             self.stream = self.audio.open(
                 format=FORMAT,
                 channels=CHANNELS,
@@ -152,6 +223,7 @@ class SpeechToTextEngine:
                 frames_per_buffer=CHUNK,
                 # macOS対応: コールバックを使わない
                 stream_callback=None,
+                input_device_index=self.input_device_index,
             )
             self.stream.start_stream()
             print("🎤 マイク入力を開始しました")
@@ -167,14 +239,28 @@ class SpeechToTextEngine:
     
     def audio_generator(self):
         """音声データをストリーミングで生成（ブロッキング読み取り）"""
+        level_meter = os.getenv("AUDIO_LEVEL_METER", "false").lower() in ("1", "true", "yes")
+        last_print = 0.0
         while True:
             # リスニングが一時停止中はスキップ
             if not listening_event.is_set():
+                time.sleep(0.01)
                 continue
             
             try:
                 # ブロッキングで音声データを読み取り
                 chunk = self.stream.read(CHUNK, exception_on_overflow=False)
+
+                if level_meter:
+                    now = time.monotonic()
+                    if now - last_print >= 1.0:
+                        try:
+                            rms = audioop.rms(chunk, 2)  # 16-bit = 2 bytes
+                            print(f"🔊 [MIC] rms={rms}")
+                        except Exception:
+                            pass
+                        last_print = now
+
                 yield chunk
             except Exception as e:
                 print(f"⚠️  音声読み取りエラー: {e}")
@@ -233,6 +319,11 @@ def transcription_worker(loop: asyncio.AbstractEventLoop, stop_event: threading.
         
         while not stop_event.is_set():
             try:
+                # リスニングが一時停止中は、Googleのストリーミングセッション自体を開始しない
+                # （音声を送らずに待つと Audio Timeout になるため）
+                while not listening_event.is_set() and not stop_event.is_set():
+                    time.sleep(0.05)
+
                 # 音声ストリームを生成
                 audio_generator = engine.audio_generator()
                 

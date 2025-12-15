@@ -9,8 +9,8 @@ from fastapi.responses import StreamingResponse
 from openai import OpenAI  # OpenAIライブラリ
 from pydantic import BaseModel
 
-# RAGは後で実装するため、一旦無効化
-_rag_disabled = True
+# RAG import (OpenAI Embeddings版)
+from rag_openai import OpenAIRAG
 
 # --- 1. 設定 ---
 
@@ -53,6 +53,11 @@ if not api_key:
 
 client = OpenAI(api_key=api_key)
 
+# RAGを初期化 (OpenAI Embeddings版)
+KNOWLEDGE_DIR = Path(__file__).resolve().parent / "knowledge"
+print(f"📂 ナレッジディレクトリ: {KNOWLEDGE_DIR}")
+rag = OpenAIRAG(knowledge_dir=KNOWLEDGE_DIR) if KNOWLEDGE_DIR.exists() else None
+
 # 社長クローンのペルソナ（人格）を設定
 SYSTEM_PROMPT = "あなたは日本を代表する企業の社長です。威厳を持ち、洞察力に富み、しかし簡潔に回答してください。語尾は「～だ。」「～かね。」「～だろう。」などを使い、断定的に話してください。"
 MODEL = "gpt-4o-mini" # 最新モデル (または gpt-3.5-turbo)
@@ -73,55 +78,81 @@ class TextInput(BaseModel):
 def _build_messages(user_text: str):
     """
     OpenAIのChatCompletions APIに渡すメッセージを構築
+    RAGで関連する知識を検索してコンテキストに追加（意味ベース検索）
     """
+    # システムプロンプトを構築
     system_prompt = (
-        "あなたは成澤（なりさわ）という名前のキャラクターです。\n"
-        "ユーザーと自然な会話をしてください。"
+        "あなたはなりさわもくれんという名前の人間です。\n"
+        "ユーザーと自然な会話をしてください。\n"
+        "回答は簡潔に、100文字以内を目安にしてください。"
     )
     
-    return [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_text}
-    ]
+    messages = [{"role": "system", "content": system_prompt}]
+    
+    # RAG検索を実行（OpenAI Embeddings で意味ベース検索）
+    if rag and rag.chunks:
+        results = rag.search(user_text, top_k=3)
+        
+        print(f"\n💡 [RAG検索] クエリ: {user_text}")
+        print(f"📊 [RAG結果] {len(results)}件の関連情報を検索:")
+        for i, result in enumerate(results, 1):
+            chunk_id = result.get('id', '?')
+            score = result.get('_score', 0.0)  # OpenAIRAGは '_score' キーを使用
+            text_preview = result.get('text', '')[:50]
+            print(f"   [{i}] {chunk_id} (類似度: {score:.3f}) {text_preview}...")
+        
+        # RAG結果があればコンテキストを追加
+        if results:
+            context = rag.format_context(results)
+            context_message = (
+                f"以下は参考情報です。質問に関連する内容があれば自然に活用してください：\n\n"
+                f"{context}\n\n"
+                f"上記の情報を参考にしつつ、自然な会話を心がけてください。"
+            )
+            messages.append({"role": "system", "content": context_message})
+    
+    messages.append({"role": "user", "content": user_text})
+    
+    return messages
 
-
-# --- 3. OpenAIからのレスポンスをストリーミングするジェネレータ ---
-async def stream_openai_response(messages: List[dict]):
-    """OpenAI APIからストリームでレスポンスを取得するジェネレータ"""
+# --- 3. OpenAIからのレスポンスを一括取得 ---
+async def get_openai_response(messages: List[dict]):
+    """OpenAI APIから一括でレスポンスを取得"""
     try:
-        # OpenAI APIにストリーミングモードでリクエスト
-        stream = client.chat.completions.create(
+        # OpenAI APIに一括リクエスト（stream=False）
+        response = client.chat.completions.create(
             model=MODEL,
             messages=messages,
-            stream=True, # ストリーミングを有効化
+            stream=False,  # ストリーミング無効化
         )
         
-        # 受け取った断片を逐次送信（yield）する
-        for chunk in stream:
-            content = chunk.choices[0].delta.content
-            if content:
-                print(content, end="", flush=True) # サーバー側でも確認用に出力
-                yield content
+        # 完全な応答を取得
+        full_response = response.choices[0].message.content
+        print(f"\n✅ [LLM] 応答生成完了: {len(full_response)}文字")
+        print(f"💬 [LLM] 応答: {full_response}")
+        
+        return full_response
                 
     except Exception as e:
-        print(f"\nOpenAI API Error: {e}")
-        yield f"エラーが発生しました: {e}"
+        print(f"\n❌ OpenAI API Error: {e}")
+        return f"エラーが発生しました: {e}"
 
 # --- 4. FastAPIエンドポイントの定義 ---
 @app.post("/think")
 async def think(input_data: TextInput):
     """
     STT（耳）からテキストを受け取り、LLM（頭）の回答を
-    ストリーミングでコントローラーに返す
+    一括でコントローラーに返す
     """
     print(f"\n[LLM Request]: {input_data.text}")
     print("[LLM Response]: ", end="")
     messages = _build_messages(input_data.text)
 
-    return StreamingResponse(
-        stream_openai_response(messages),
-        media_type="text/plain" # テキストを平文としてストリーミング
-    )
+    # 一括でレスポンスを取得
+    response_text = await get_openai_response(messages)
+    
+    # JSON形式で完全な応答を返す
+    return {"response": response_text}
 
 # --- 5. サーバー起動 ---
 if __name__ == "__main__":

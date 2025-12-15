@@ -1,0 +1,3 @@
+# VM-side TTS server dependencies (GPU VM)
+websockets
+torch

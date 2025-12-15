@@ -1,0 +1,21 @@
+{
+  "model_dir": "CosyVoice/pretrained_models/CosyVoice2-0.5B",
+  "sample_rate": 24000,
+  "batch_size": 1,
+  "learning_rate": 0.00005,
+  "num_epochs": 20,
+  "lora_rank": 8,
+  "lora_alpha": 16,
+  "lora_dropout": 0.05,
+  "gradient_accumulation_steps": 8,
+  "warmup_steps": 50,
+  "save_steps": 100,
+  "max_grad_norm": 5.0,
+  "speaker_name": "narisawa",
+  "training_date": "2025-11-16",
+  "device": "cuda",
+  "num_segments": 30,
+  "max_frames_in_batch": 400,
+  "shuffle_size": 100,
+  "comments": "少量データ（30サンプル）なので20エポックで学習。学習率を高めに設定。"
+}

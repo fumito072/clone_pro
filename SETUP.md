@@ -105,8 +105,14 @@ sed -i "s/qwen_pretrain_path: '.*'/qwen_pretrain_path: ''/" pretrained_models/Co
 # api_serverディレクトリを作成
 mkdir -p /mnt/c/Users/YOUR_USERNAME/development/CosyVoice/api_server
 
-# cosyvoice_engine.pyとtts_server.pyをこのリポジトリからコピー
-# (WSL環境にこれらのファイルを配置)
+# このリポジトリの `api_server/` をWSL側へコピー
+# 例）Windows側でこのリポジトリを置いている場合:
+#   cp /mnt/c/Users/YOUR_USERNAME/development/narisawa_clone/api_server/cosyvoice_engine.py /mnt/c/Users/YOUR_USERNAME/development/CosyVoice/api_server/
+#   cp /mnt/c/Users/YOUR_USERNAME/development/narisawa_clone/api_server/tts_server.py      /mnt/c/Users/YOUR_USERNAME/development/CosyVoice/api_server/
+#   cp /mnt/c/Users/YOUR_USERNAME/development/narisawa_clone/api_server/speaker_config.json.example \
+#      /mnt/c/Users/YOUR_USERNAME/development/CosyVoice/api_server/speaker_config.json
+#
+# `speaker_config.json` のパスは、学習済みLoRA（LLM/Flow）と spk2embedding.pt を指定してください。
 ```
 
 #### Windows Port Forwarding設定
@@ -133,10 +139,9 @@ ip addr show eth0 | grep inet
 # WSL: /mnt/c/Users/YOUR_USERNAME/development/CosyVoice/my_voice.wav
 ```
 
-`controller.py`で参照パスを設定：
-```python
-PROMPT_AUDIO_PATH = "/mnt/c/Users/YOUR_USERNAME/development/CosyVoice/my_voice.wav"
-PROMPT_TEXT = "音声サンプルの転写テキスト"
+`controller.py` はLoRA話者IDで合成します。
+```bash
+export SPEAKER_ID="narisawa2"
 ```
 
 ## 起動方法
@@ -166,7 +171,9 @@ python run_llm_server.py
 
 **Terminal 3: Controller**
 ```bash
-cd /Users/hoshinafumito/development/PresidentClone
+cd /Users/hoshinafumito/development/narisawa_clone
+# face無し（デフォルト）。必要なら true で有効化。
+export ENABLE_FACE_ANIMATION=false
 python controller.py
 ```
 

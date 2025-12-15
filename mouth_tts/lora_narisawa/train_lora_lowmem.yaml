@@ -1,0 +1,113 @@
+# CosyVoice2 LoRA Fine-tuning Configuration (Narisawa Speaker)
+# 低メモリ版: 推奨GPU VRAM 6-8GB
+# サンプル数: 30個
+# 学習時間: 約30-45分
+
+# データセット設定（メモリ最適化）
+dataset_conf:
+  filter_conf:
+    max_length: 20480
+    min_length: 50
+    token_max_length: 400
+    token_min_length: 1
+  resample_conf:
+    resample_rate: 24000
+  speed_perturb: false           # データ拡張無効化（メモリ削減）
+  fbank_conf:
+    num_mel_bins: 80
+    frame_shift: 10
+    frame_length: 25
+    dither: 1.0
+  spec_aug: false                # スペクトログラム拡張無効化
+  shuffle: true
+  shuffle_conf:
+    shuffle_size: 100            # 少量データなので100に削減
+  sort: true
+  sort_conf:
+    sort_size: 100               # 少量データなので100に削減
+  batch_conf:
+    batch_type: dynamic
+    max_frames_in_batch: 400     # メモリ削減: 2000→400（80%削減）
+
+# 学習設定（少量データ用に調整）
+train_conf:
+  accum_grad: 8                  # メモリ削減: 2→8（実質バッチサイズ1/4）
+  grad_clip: 5.0
+  max_epoch: 20                  # 少量データなので20エポックに増加
+  log_interval: 5                # 少量なので頻繁にログ
+  save_checkpoint_interval: 100  # こまめに保存
+  keep_checkpoint_max: 20        # 全エポック保存
+  val_interval: 100
+
+# オプティマイザ設定
+optim: adam
+optim_conf:
+  lr: 0.00005                    # 少量データ用に学習率を上げる
+  weight_decay: 0.01
+
+# スケジューラ設定
+scheduler: warmuplr
+scheduler_conf:
+  warmup_steps: 50               # 少量データなので短く
+
+# LLMモデル設定（LoRA）
+llm: !new:cosyvoice.llm.llm.CosyVoiceLLM
+  llm_input_size: 4096
+  llm_output_size: 4096
+  text_token_size: 151936
+  speech_token_size: 4096
+  length_normalized_loss: true
+  lora_rank: 8                   # メモリ削減: 16→8（50%削減）
+  lora_alpha: 16
+  lora_dropout: 0.05
+  llm_type: qwen2.5
+  pretrain_path: !PLACEHOLDER
+  use_flash_attn: false          # Flash Attention無効化（メモリ削減）
+
+# 損失関数設定
+loss: ce_loss
+loss_conf:
+  padding_idx: -1
+
+# Flowモデル設定（学習しない）
+flow: !new:cosyvoice.flow.flow.CosyVoiceFlow
+  input_size: 512
+  output_size: 80
+  spk_embed_dim: 192
+  encoder_type: transformer
+  encoder_params:
+    input_layer: linear
+    num_blocks: 6
+    linear_units: 2048
+    dropout_rate: 0.1
+    positional_dropout_rate: 0.1
+    attention_dropout_rate: 0.0
+    normalize_before: true
+    use_flash_attn: false
+
+# HiFTGANボコーダー設定（学習しない）
+hift: !new:cosyvoice.hifigan.generator.HiFTGenerator
+  in_channels: 80
+  base_channels: 512
+  nb_harmonics: 8
+  sampling_rate: 24000
+  nsf_alpha: 0.1
+  nsf_sigma: 0.003
+  nsf_voiced_threshold: 10
+  upsample_rates: [8, 8]
+  upsample_kernel_sizes: [16, 16]
+  istft_params:
+    n_fft: 16
+    hop_len: 4
+  resblock_kernel_sizes: [3, 7, 11]
+  resblock_dilation_sizes: [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
+  source_resblock_kernel_sizes: [7, 11]
+  source_resblock_dilation_sizes: [[1, 3, 5], [1, 3, 5]]
+  lrelu_slope: 0.1
+  audio_limit: 0.99
+  f0_predictor: rmvpe
+  discriminator_params:
+    base_channels: 128
+    max_channels: 512
+    downsample_scales: [4, 4, 4]
+    inner_channels: [32, 32, 16, 16]

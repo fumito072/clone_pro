@@ -1,0 +1,13 @@
+{
+  "speakers": {
+    "narisawa2": {
+      "type": "lora",
+      "llm_lora_model_path": "/path/to/lora_narisawa2_trained/llm/epoch_XX_whole.pt",
+      "flow_lora_model_path": "/path/to/lora_narisawa2_trained/flow/epoch_YY_whole.pt",
+      "spk_embedding_path": "/path/to/lora_narisawa2/spk2embedding.pt",
+      "description": "narisawa2 (LLM+Flow LoRA)",
+      "active": true
+    }
+  },
+  "default_speaker": "narisawa2"
+}

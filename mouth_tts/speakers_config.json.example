@@ -1,0 +1,9 @@
+{
+  "example_speaker": {
+    "reference_audio": "reference_voice_24k.wav",
+    "long_audio": "speaker_voice_long.wav",
+    "prompt_text": "（ここに話者の自己紹介などの短文）",
+    "lora_model": "lora_example",
+    "active": true
+  }
+}
