@@ -5,9 +5,8 @@
 ## システム構成
 
 ```
-Mac (STT + LLM + Controller)
-    ↓ WebSocket
-Windows/WSL2 (TTS Server with GPU)
+Mac (STT + LLM + TTS + Controller)
+    ↓ 音声処理パイプライン
 ```
 
 ### コンポーネント
@@ -25,18 +24,31 @@ Windows/WSL2 (TTS Server with GPU)
 - PyAudio
 - マイクとスピーカー
 
-### Windows/WSL2環境
-- NVIDIA GPU (RTX 3070以上推奨)
-- CUDA 12.1+
-- Miniconda3
-
 ## セットアップ手順
 
 ### 1. Mac側のセットアップ
 
 #### Google Cloud認証
+
 ```bash
 gcloud auth application-default login
+```
+
+認証後、quota projectを設定してください：
+
+```bash
+# ADCに対してquota projectを明示的に設定（推奨）
+gcloud auth application-default set-quota-project YOUR_PROJECT_ID
+
+# または、環境変数で設定（ターミナルセッションごと）
+export GCLOUD_QUOTA_PROJECT=YOUR_PROJECT_ID
+```
+
+YOUR_PROJECT_IDは、[Google Cloud Console](https://console.cloud.google.com/)で確認できます。
+
+設定後、以下で確認できます：
+```bash
+gcloud auth application-default print-access-token
 ```
 
 #### 各モジュールのインストール
@@ -58,102 +70,20 @@ pip install -r requirements.txt
 
 # .envファイルを作成
 echo "OPENAI_API_KEY=your_api_key_here" > .env
+echo "GEMINI_API_KEY=your_api_key_here" >> .env
 ```
 
 **Controller**
 ```bash
-cd /Users/hoshinafumito/development/PresidentClone
+cd /Users/csc-r196/clone_pro
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
-```
-
-### 2. WSL2側のセットアップ
-
-#### CosyVoiceのインストール
-```bash
-# WSL2にログイン
-cd /mnt/c/Users/YOUR_USERNAME/development
-
-# リポジトリクローン
-git clone https://github.com/FunAudioLLM/CosyVoice.git
-cd CosyVoice
-
-# Conda環境作成
-conda create -n cosyvoice python=3.10
-conda activate cosyvoice
-
-# 依存関係インストール
-pip install -r requirements.txt
-```
-
-#### モデルのダウンロード
-```bash
-# ModelScopeからダウンロード
-pip install modelscope
-
-python << EOF
-from modelscope import snapshot_download
-snapshot_download('iic/CosyVoice2-0.5B', local_dir='pretrained_models/CosyVoice2-0.5B')
-EOF
-
-# YAMLファイルの修正
-ln -s pretrained_models/CosyVoice2-0.5B/cosyvoice2.yaml pretrained_models/CosyVoice2-0.5B/cosyvoice.yaml
-sed -i "s/qwen_pretrain_path: '.*'/qwen_pretrain_path: ''/" pretrained_models/CosyVoice2-0.5B/cosyvoice2.yaml
-```
-
-#### TTSサーバーファイルの配置
-```bash
-# api_serverディレクトリを作成
-mkdir -p /mnt/c/Users/YOUR_USERNAME/development/CosyVoice/api_server
-
-# このリポジトリの `api_server/` をWSL側へコピー
-# 例）Windows側でこのリポジトリを置いている場合:
-#   cp /mnt/c/Users/YOUR_USERNAME/development/narisawa_clone/api_server/cosyvoice_engine.py /mnt/c/Users/YOUR_USERNAME/development/CosyVoice/api_server/
-#   cp /mnt/c/Users/YOUR_USERNAME/development/narisawa_clone/api_server/tts_server.py      /mnt/c/Users/YOUR_USERNAME/development/CosyVoice/api_server/
-#   cp /mnt/c/Users/YOUR_USERNAME/development/narisawa_clone/api_server/speaker_config.json.example \
-#      /mnt/c/Users/YOUR_USERNAME/development/CosyVoice/api_server/speaker_config.json
-#
-# `speaker_config.json` のパスは、学習済みLoRA（LLM/Flow）と spk2embedding.pt を指定してください。
-```
-
-#### Windows Port Forwarding設定
-```powershell
-# PowerShellを管理者権限で実行
-netsh interface portproxy add v4tov4 listenport=8002 listenaddress=0.0.0.0 connectport=8002 connectaddress=YOUR_WSL_IP
-
-# ファイアウォールルール追加
-New-NetFirewallRule -DisplayName "WSL TTS Server" -Direction Inbound -LocalPort 8002 -Protocol TCP -Action Allow
-```
-
-WSL IPアドレスの確認:
-```bash
-# WSL内で実行
-ip addr show eth0 | grep inet
-```
-
-### 3. 音声サンプルの準備
-
-話者の音声サンプル（3〜30秒）を用意し、WSLに配置：
-```bash
-# 音声ファイルをWSLにコピー
-# Windows: C:\Users\YOUR_USERNAME\your_voice.wav
-# WSL: /mnt/c/Users/YOUR_USERNAME/development/CosyVoice/my_voice.wav
-```
-
-`controller.py` はLoRA話者IDで合成します。
-```bash
-export SPEAKER_ID="narisawa2"
 ```
 
 ## 起動方法
 
-### 1. WSL側でTTSサーバーを起動
-```bash
-cd /mnt/c/Users/YOUR_USERNAME/development/CosyVoice/api_server
-conda activate cosyvoice
-python tts_server.py
-```
-
-### 2. Mac側で各サーバーを起動
+## 起動方法
 
 **Terminal 1: STT Server**
 ```bash
@@ -169,11 +99,16 @@ source venv/bin/activate
 python run_llm_server.py
 ```
 
-**Terminal 3: Controller**
+**Terminal 3: TTS Server**
 ```bash
-cd /Users/hoshinafumito/development/narisawa_clone
-# face無し（デフォルト）。必要なら true で有効化。
-export ENABLE_FACE_ANIMATION=false
+cd mouth_tts
+source venv/bin/activate
+python tts_server.py
+```
+
+**Terminal 4: Controller**
+```bash
+cd /Users/csc-r196/clone_pro
 python controller.py
 ```
 
@@ -195,43 +130,47 @@ python controller.py
 
 ### TTS接続エラー
 ```bash
-# Mac→WSLの接続確認
-nc -zv YOUR_TAILSCALE_IP 8002
-
-# Port Forwardingの確認 (Windows PowerShell)
-netsh interface portproxy show all
+# サーバーが起動しているか確認
+# Terminal 3で実行されているか確認
 ```
 
 ### Google Cloud認証エラー
-```bash
-# 認証を再実行
-gcloud auth application-default login
+
+**エラー:**
 ```
+Your application is authenticating by using local Application Default Credentials. 
+The speech.googleapis.com API requires a quota project, which is not set by default.
+```
+
+**原因:** Application Default Credentials (ADC) にquota projectが設定されていない
+
+**対処法:**
+```bash
+# ADCに対してquota projectを明示的に設定（推奨）
+gcloud auth application-default set-quota-project YOUR_PROJECT_ID
+
+# または、環境変数で設定（ターミナルセッションごと）
+export GCLOUD_QUOTA_PROJECT=YOUR_PROJECT_ID
+
+# 設定確認
+gcloud auth application-default print-access-token
+```
+
+その後、STTサーバーを再起動してください。
 
 ## カスタマイズ
 
-### 別の話者に変更
-`controller.py`の以下を変更：
-```python
-PROMPT_AUDIO_PATH = "/path/to/new_speaker.wav"
-PROMPT_TEXT = "新しい話者の音声転写"
-```
-
 ### システムプロンプトの変更
-`head_llm/run_llm_server.py`の`_build_messages()`関数内のシステムメッセージを編集
+`head_llm/run_llm_server.py`のシステムメッセージを編集
 
 ## ネットワーク構成
 
 ```
-Mac (127.0.0.1)
+Mac
 ├── STT: ws://0.0.0.0:8001/listen
 ├── LLM: http://0.0.0.0:8002/think
+├── TTS: ws://0.0.0.0:8003/tts
 └── Controller
-    ↓ Tailscale (100.64.94.124)
-Windows Host
-    ↓ Port Forward (0.0.0.0:8002 → WSL_IP:8002)
-WSL2 (172.19.35.59)
-└── TTS: ws://0.0.0.0:8002/tts
 ```
 
 ## ライセンス
