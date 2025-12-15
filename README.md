@@ -206,6 +206,14 @@ source venv/bin/activate
 python run_stt_server.py
 ```
 
+入力が入っているか確認したい場合（RMS表示）:
+
+```bash
+cd ears_stt
+source venv/bin/activate
+AUDIO_LEVEL_METER=1 python run_stt_server.py
+```
+
 **5) Macで頭（LLM）起動（8002）**
 
 ```bash
@@ -245,9 +253,7 @@ python3 run_stt_server.py
 
 ```bash
 cd head_llm
-python3 run_llm_server_gemini.py  # Gemini API使用
-# または
-python3 run_llm_server.py  # OpenAI API使用
+python3 run_llm_server.py  # Gemini API使用（このブランチはGeminiに統一）
 ```
 
 #### ターミナル3: 顔（Face）
@@ -437,4 +443,14 @@ gcloud compute instances stop cosyvoice-tts-server --zone=asia-east1-c --project
 
 # start
 gcloud compute instances start cosyvoice-tts-server --zone=asia-east1-c --project=hosipro
+
+#local mac
+gcloud compute ssh cosyvoice-tts-server --zone=asia-east1-c --project=hosipro -- -N -L 8004:127.0.0.1:8002
+
+gcloud compute ssh cosyvoice-tts-server --zone=asia-east1-c --project=hosipro
+#これでmacとremote vmとの接続が可能に
+
 ```
+
+
+

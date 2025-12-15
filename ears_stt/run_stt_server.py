@@ -45,12 +45,24 @@ listening_event = threading.Event()
 listening_event.set()  # 初期状態はリスニング中
 
 
+def _get_websocket_path(websocket: WebSocketServerProtocol) -> str:
+    """websockets のバージョン差分を吸収してリクエストパスを取得する。"""
+    path = getattr(websocket, "path", None)
+    if isinstance(path, str) and path:
+        return path
+    request = getattr(websocket, "request", None)
+    request_path = getattr(request, "path", None)
+    if isinstance(request_path, str) and request_path:
+        return request_path
+    return "/"
+
+
 async def websocket_handler(websocket: WebSocketServerProtocol):
     """
     /listen に接続したクライアント（コントローラー等）を登録し、
     接続が切れるまで待機する。
     """
-    path = getattr(websocket, "path", "/")
+    path = _get_websocket_path(websocket)
     if path != "/listen":
         print(f"⚠️  [WS] /listen 以外のパスから接続されました: {path} @ {websocket.remote_address}")
     
@@ -144,7 +156,7 @@ class SpeechToTextEngine:
         
         self.streaming_config = speech.StreamingRecognitionConfig(
             config=self.config,
-            interim_results=False,  # 確定した結果のみ取得
+            interim_results=False,  # 確定結果のみ
         )
         
         # PyAudioの初期化
@@ -242,10 +254,10 @@ class SpeechToTextEngine:
         level_meter = os.getenv("AUDIO_LEVEL_METER", "false").lower() in ("1", "true", "yes")
         last_print = 0.0
         while True:
-            # リスニングが一時停止中はスキップ
+            # リスニングが一時停止したら、このストリーミングセッションを終了する。
+            # （無音のまま継続すると Google 側で Audio Timeout になりやすい）
             if not listening_event.is_set():
-                time.sleep(0.01)
-                continue
+                break
             
             try:
                 # ブロッキングで音声データを読み取り
@@ -312,6 +324,8 @@ def transcription_worker(loop: asyncio.AbstractEventLoop, stop_event: threading.
     
     print("✅ 初期化完了")
     print("\n🎤 音声を待機中... (話しかけてください。Ctrl+Cで停止)")
+    if os.getenv("AUDIO_LEVEL_METER", "false").lower() not in ("1", "true", "yes"):
+        print("💡 ヒント: 入力確認は `AUDIO_LEVEL_METER=1` を付けて起動すると分かりやすいです")
     
     try:
         # マイク入力を開始
@@ -323,6 +337,11 @@ def transcription_worker(loop: asyncio.AbstractEventLoop, stop_event: threading.
                 # （音声を送らずに待つと Audio Timeout になるため）
                 while not listening_event.is_set() and not stop_event.is_set():
                     time.sleep(0.05)
+
+                if stop_event.is_set():
+                    break
+
+                print("🎧 [STT] Google Streaming セッションを開始...")
 
                 # 音声ストリームを生成
                 audio_generator = engine.audio_generator()
@@ -339,16 +358,21 @@ def transcription_worker(loop: asyncio.AbstractEventLoop, stop_event: threading.
                 )
                 
                 # レスポンスを処理
+                transcript_count = 0
                 for transcript in engine.process_responses(responses):
+                    transcript_count += 1
                     # 認識結果をWebSocketクライアントに送信
                     asyncio.run_coroutine_threadsafe(
                         broadcast_text(transcript),
                         loop,
                     )
-                
+
+                print(f"🎧 [STT] ストリーミングセッション終了 (認識: {transcript_count}件)")
+
             except Exception as exc:
                 if not stop_event.is_set():
-                    print(f"⚠️  [STT] エラーが発生しました: {exc}")
+                    exc_name = type(exc).__name__
+                    print(f"⚠️  [STT] エラーが発生しました ({exc_name}): {exc}")
                     print("🔄 [STT] 3秒後に再接続します...")
                     stop_event.wait(timeout=3)
     
