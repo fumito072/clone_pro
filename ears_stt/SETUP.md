@@ -12,9 +12,22 @@ chmod +x setup.sh
 ./setup.sh
 ```
 
-### 2. Google Cloud 認証情報を取得
+### 2. Google Cloud 認証
 
-以下の手順に従ってサービスアカウントキー（JSON）を取得してください。
+ローカル開発環境では、サービスアカウントキー（JSON）ではなく、**Application Default Credentials (ADC)** の使用を推奨します。
+
+```bash
+# Google Cloud SDKをインストールしていない場合
+brew install google-cloud-sdk
+
+# ログインして認証情報を取得
+gcloud auth application-default login
+
+# プロジェクトを設定（重要）
+gcloud auth application-default set-quota-project YOUR_PROJECT_ID
+```
+
+これで、JSONファイルを管理することなく安全に認証できます。
 
 ## 📋 Google Cloud 設定手順（詳細）
 
@@ -34,41 +47,15 @@ chmod +x setup.sh
 3. **「Cloud Speech-to-Text API」** を選択
 4. **「有効にする」** をクリック
 
-### ステップ3: サービスアカウントの作成
+### ステップ3: 認証の確認
 
-1. 左側のメニュー → **「APIとサービス」** → **「認証情報」**
-2. **「認証情報を作成」** → **「サービスアカウント」** を選択
-3. サービスアカウントの詳細を入力:
-   - **サービスアカウント名**: `stt-service-account` (任意の名前)
-   - **サービスアカウントID**: 自動生成される
-   - **説明**: `Speech-to-Text API用のサービスアカウント` (任意)
-4. **「作成して続行」** をクリック
-
-### ステップ4: ロールの割り当て
-
-1. **「このサービスアカウントにプロジェクトへのアクセスを許可する」** セクションで:
-   - **「ロールを選択」** → **「Cloud Speech」** → **「Cloud Speech 管理者」** を選択
-2. **「続行」** をクリック
-3. **「完了」** をクリック
-
-### ステップ5: JSONキーの作成
-
-1. **「認証情報」** ページで、作成したサービスアカウントをクリック
-2. **「キー」** タブをクリック
-3. **「鍵を追加」** → **「新しい鍵を作成」** をクリック
-4. **「JSON」** を選択
-5. **「作成」** をクリック
-6. JSONファイルが自動的にダウンロードされます
-
-### ステップ6: 認証情報の配置
-
-1. ダウンロードしたJSONファイルの名前を `google_credentials.json` に変更
-2. このファイルを `ears_stt/` ディレクトリに配置
+ターミナルで以下を実行し、認証が正しく設定されているか確認します。
 
 ```bash
-# ダウンロードフォルダから移動する例
-mv ~/Downloads/project-name-xxxxx.json /path/to/PresidentClone/ears_stt/google_credentials.json
+gcloud auth application-default print-access-token
 ```
+
+アクセストークンが表示されれば設定完了です。
 
 ## 🎯 使用方法
 
