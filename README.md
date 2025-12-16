@@ -231,7 +231,7 @@ export HEAD_LLM_SERVER_URL="http://127.0.0.1:8002/think"
 export MOUTH_TTS_SERVER_URL="ws://127.0.0.1:8004/tts"
 export SPEAKER_ID="narisawa2"
 export ENABLE_FACE_ANIMATION="false"
-export SAVE_MOUTH_OUTPUT="true"  # 生成音声をmouth_output_*.wavで保存
+export SAVE_MOUTH_OUTPUT="true"
 python controller.py
 ```
 

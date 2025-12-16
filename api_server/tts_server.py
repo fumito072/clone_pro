@@ -10,6 +10,7 @@ from cosyvoice_engine import CosyVoiceEngine
 
 tts_engine: CosyVoiceEngine | None = None
 _engine_lock: asyncio.Lock | None = None
+_infer_semaphore: asyncio.Semaphore | None = None
 
 
 def _ts() -> str:
@@ -36,6 +37,14 @@ def _truthy(value: str | None) -> bool:
     if value is None:
         return False
     return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _get_infer_semaphore() -> asyncio.Semaphore:
+    global _infer_semaphore
+    if _infer_semaphore is None:
+        max_concurrency = int(os.getenv("TTS_MAX_CONCURRENCY", "1"))
+        _infer_semaphore = asyncio.Semaphore(max(1, max_concurrency))
+    return _infer_semaphore
 
 
 async def websocket_handler(ws):
@@ -74,44 +83,48 @@ async def websocket_handler(ws):
         try:
             engine = await _get_engine()
 
-            if stream:
-                await ws.send(
-                    json.dumps(
-                        {
-                            "status": "start",
-                            "stream": True,
-                            "format": "pcm_s16le",
-                            "channels": 1,
-                            "sample_rate": 24000,
-                        }
+            # Avoid overlapping GPU inference which can trigger CUDA OOM.
+            sem = _get_infer_semaphore()
+            async with sem:
+
+                if stream:
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "status": "start",
+                                "stream": True,
+                                "format": "pcm_s16le",
+                                "channels": 1,
+                                "sample_rate": 24000,
+                            }
+                        )
                     )
-                )
 
-                # NOTE: stream=True is best-effort. Heavy inference can block; for stability we
-                # generate chunks in a thread and then send them.
-                chunks: list[bytes] = await asyncio.to_thread(
-                    lambda: list(engine.stream_sft_pcm(text, speaker, speed=speed))
-                )
-                for pcm_chunk in chunks:
-                    await ws.send(pcm_chunk)
-
-                await ws.send(json.dumps({"status": "done"}))
-
-            else:
-                pcm = await asyncio.to_thread(engine.synthesize_sft_pcm, text, speaker, speed)
-                await ws.send(
-                    json.dumps(
-                        {
-                            "status": "complete",
-                            "format": "pcm_s16le",
-                            "channels": 1,
-                            "sample_rate": 24000,
-                            "size": len(pcm),
-                        }
+                    # NOTE: stream=True is best-effort. Heavy inference can block; for stability we
+                    # generate chunks in a thread and then send them.
+                    chunks: list[bytes] = await asyncio.to_thread(
+                        lambda: list(engine.stream_sft_pcm(text, speaker, speed=speed))
                     )
-                )
-                await ws.send(pcm)
-                await ws.send(json.dumps({"status": "done"}))
+                    for pcm_chunk in chunks:
+                        await ws.send(pcm_chunk)
+
+                    await ws.send(json.dumps({"status": "done"}))
+
+                else:
+                    pcm = await asyncio.to_thread(engine.synthesize_sft_pcm, text, speaker, speed)
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "status": "complete",
+                                "format": "pcm_s16le",
+                                "channels": 1,
+                                "sample_rate": 24000,
+                                "size": len(pcm),
+                            }
+                        )
+                    )
+                    await ws.send(pcm)
+                    await ws.send(json.dumps({"status": "done"}))
 
         except Exception as exc:
             await ws.send(json.dumps({"status": "error", "message": str(exc)}))

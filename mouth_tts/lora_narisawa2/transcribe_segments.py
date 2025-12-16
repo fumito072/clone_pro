@@ -42,7 +42,10 @@ if TEXT_FILE.exists():
             line = line.strip()
             if line:
                 existing_lines.append(line)
-                utt_id = line.split()[0] if line else None
+                if "\t" in line:
+                    utt_id = line.split("\t", 1)[0]
+                else:
+                    utt_id = line.split(None, 1)[0]
                 if utt_id:
                     existing_utts.add(utt_id)
     print(f"📝 既存の文字起こし: {len(existing_utts)}個")
@@ -124,7 +127,10 @@ if transcriptions or existing_lines:
     
     # 既存の内容を読み込み
     for line in existing_lines:
-        parts = line.split(None, 1)  # 最初の空白で分割
+        if "\t" in line:
+            parts = line.split("\t", 1)
+        else:
+            parts = line.split(None, 1)  # 互換: スペース区切りも受け入れる
         if len(parts) == 2:
             utt_id, text = parts
             all_transcriptions[utt_id] = text
@@ -137,7 +143,7 @@ if transcriptions or existing_lines:
     with open(TEXT_FILE, "w", encoding="utf-8") as f:
         for utt_id in sorted(all_transcriptions.keys()):
             text = all_transcriptions[utt_id]
-            f.write(f"{utt_id} {text}\n")
+            f.write(f"{utt_id}\t{text}\n")
     
     print(f"✅ {len(transcriptions)}件の文字起こしを追加")
     print(f"📄 合計: {len(all_transcriptions)}件")

@@ -164,18 +164,22 @@ class CosyVoiceEngine:
 
     def synthesize_sft_audio(self, text: str, speaker: str, speed: float = 1.0) -> torch.Tensor:
         self.load_speaker_lora(speaker)
-        result = list(self.model.inference_sft(text, speaker, stream=False, speed=speed))
-        audio = torch.cat([chunk["tts_speech"] for chunk in result if "tts_speech" in chunk], dim=1)
-        return audio
+        with torch.inference_mode():
+            result = list(self.model.inference_sft(text, speaker, stream=False, speed=speed))
+            audio = torch.cat(
+                [chunk["tts_speech"] for chunk in result if "tts_speech" in chunk], dim=1
+            )
+            return audio
 
     def stream_sft_pcm(self, text: str, speaker: str, speed: float = 1.0):
         self.load_speaker_lora(speaker)
-        for chunk in self.model.inference_sft(text, speaker, stream=True, speed=speed):
-            if "tts_speech" not in chunk:
-                continue
-            audio_np = chunk["tts_speech"].squeeze(0).detach().cpu().numpy()
-            audio_int16 = (audio_np * 32767).astype("int16")
-            yield audio_int16.tobytes()
+        with torch.inference_mode():
+            for chunk in self.model.inference_sft(text, speaker, stream=True, speed=speed):
+                if "tts_speech" not in chunk:
+                    continue
+                audio_np = chunk["tts_speech"].squeeze(0).detach().cpu().numpy()
+                audio_int16 = (audio_np * 32767).astype("int16")
+                yield audio_int16.tobytes()
 
     def synthesize_sft_pcm(self, text: str, speaker: str, speed: float = 1.0) -> bytes:
         audio = self.synthesize_sft_audio(text, speaker, speed=speed)
