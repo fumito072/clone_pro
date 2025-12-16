@@ -1,10 +1,40 @@
 import json
 import os
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
 import torch
+
+
+def _fade_out(audio: torch.Tensor, sample_rate: int = 24000, fade_ms: int = 10) -> torch.Tensor:
+    if fade_ms <= 0:
+        return audio
+    if audio.numel() == 0:
+        return audio
+    fade_samples = int(sample_rate * (fade_ms / 1000.0))
+    if fade_samples <= 0:
+        return audio
+    total = audio.shape[-1]
+    fade_samples = min(fade_samples, total)
+    if fade_samples <= 1:
+        return audio
+    ramp = torch.linspace(1.0, 0.0, steps=fade_samples, device=audio.device, dtype=audio.dtype)
+    audio = audio.clone()
+    audio[..., -fade_samples:] = audio[..., -fade_samples:] * ramp
+    return audio
+
+
+def _float_audio_to_int16_bytes(audio_np):
+    # Clip to prevent int16 wrap-around which can cause sharp clicks.
+    import numpy as np
+
+    audio_np = np.asarray(audio_np, dtype=np.float32)
+    audio_np = np.clip(audio_np, -1.0, 1.0)
+    audio_i32 = np.rint(audio_np * 32767.0).astype(np.int32)
+    audio_i32 = np.clip(audio_i32, -32768, 32767)
+    return audio_i32.astype(np.int16).tobytes()
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -53,6 +83,21 @@ def _to_embedding_tensor(value: Any) -> torch.Tensor:
     if tensor.dim() == 1:
         tensor = tensor.unsqueeze(0)
     return tensor
+
+
+def _truthy(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _autocast_context():
+    if not torch.cuda.is_available():
+        return nullcontext()
+    # Default: on. Can disable with TTS_FP16=0
+    if _truthy(os.getenv("TTS_FP16", "1")):
+        return torch.autocast(device_type="cuda", dtype=torch.float16)
+    return nullcontext()
 
 
 class CosyVoiceEngine:
@@ -164,25 +209,25 @@ class CosyVoiceEngine:
 
     def synthesize_sft_audio(self, text: str, speaker: str, speed: float = 1.0) -> torch.Tensor:
         self.load_speaker_lora(speaker)
-        with torch.inference_mode():
+        with torch.inference_mode(), _autocast_context():
             result = list(self.model.inference_sft(text, speaker, stream=False, speed=speed))
             audio = torch.cat(
                 [chunk["tts_speech"] for chunk in result if "tts_speech" in chunk], dim=1
             )
+            fade_ms = int(os.getenv("TTS_FADE_OUT_MS", "10"))
+            audio = _fade_out(audio, sample_rate=24000, fade_ms=fade_ms)
             return audio
 
     def stream_sft_pcm(self, text: str, speaker: str, speed: float = 1.0):
         self.load_speaker_lora(speaker)
-        with torch.inference_mode():
+        with torch.inference_mode(), _autocast_context():
             for chunk in self.model.inference_sft(text, speaker, stream=True, speed=speed):
                 if "tts_speech" not in chunk:
                     continue
                 audio_np = chunk["tts_speech"].squeeze(0).detach().cpu().numpy()
-                audio_int16 = (audio_np * 32767).astype("int16")
-                yield audio_int16.tobytes()
+                yield _float_audio_to_int16_bytes(audio_np)
 
     def synthesize_sft_pcm(self, text: str, speaker: str, speed: float = 1.0) -> bytes:
         audio = self.synthesize_sft_audio(text, speaker, speed=speed)
         audio_np = audio.squeeze(0).detach().cpu().numpy()
-        audio_int16 = (audio_np * 32767).astype("int16")
-        return audio_int16.tobytes()
+        return _float_audio_to_int16_bytes(audio_np)

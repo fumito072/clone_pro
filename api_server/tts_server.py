@@ -47,6 +47,19 @@ def _get_infer_semaphore() -> asyncio.Semaphore:
     return _infer_semaphore
 
 
+def _stream_send_pcm_from_thread(
+    loop: asyncio.AbstractEventLoop,
+    ws,
+    engine: CosyVoiceEngine,
+    text: str,
+    speaker: str,
+    speed: float,
+) -> None:
+    for pcm_chunk in engine.stream_sft_pcm(text, speaker, speed=speed):
+        fut = asyncio.run_coroutine_threadsafe(ws.send(pcm_chunk), loop)
+        fut.result()
+
+
 async def websocket_handler(ws):
     path = getattr(ws, "path", "/")
     if path not in {"/tts", "/"}:
@@ -100,15 +113,25 @@ async def websocket_handler(ws):
                         )
                     )
 
-                    # NOTE: stream=True is best-effort. Heavy inference can block; for stability we
-                    # generate chunks in a thread and then send them.
-                    chunks: list[bytes] = await asyncio.to_thread(
-                        lambda: list(engine.stream_sft_pcm(text, speaker, speed=speed))
-                    )
-                    for pcm_chunk in chunks:
-                        await ws.send(pcm_chunk)
+                    loop = asyncio.get_running_loop()
+                    try:
+                        await asyncio.to_thread(
+                            _stream_send_pcm_from_thread,
+                            loop,
+                            ws,
+                            engine,
+                            text,
+                            speaker,
+                            speed,
+                        )
+                    except Exception:
+                        # Client disconnects or send errors can surface here.
+                        pass
 
-                    await ws.send(json.dumps({"status": "done"}))
+                    try:
+                        await ws.send(json.dumps({"status": "done"}))
+                    except Exception:
+                        pass
 
                 else:
                     pcm = await asyncio.to_thread(engine.synthesize_sft_pcm, text, speaker, speed)
@@ -123,8 +146,11 @@ async def websocket_handler(ws):
                             }
                         )
                     )
-                    await ws.send(pcm)
-                    await ws.send(json.dumps({"status": "done"}))
+                    try:
+                        await ws.send(pcm)
+                        await ws.send(json.dumps({"status": "done"}))
+                    except Exception:
+                        pass
 
         except Exception as exc:
             await ws.send(json.dumps({"status": "error", "message": str(exc)}))
@@ -138,6 +164,22 @@ async def main():
     host = os.getenv("TTS_HOST", "0.0.0.0")
     port = int(os.getenv("TTS_PORT", "8002"))
 
+    async def _warmup_after_start() -> None:
+        if not _truthy(os.getenv("TTS_WARMUP", "true")):
+            return
+        try:
+            start = time.time()
+            engine = await _get_engine()
+            speaker = os.getenv("SPEAKER_ID") or engine.get_default_speaker() or "default"
+            text = os.getenv("TTS_WARMUP_TEXT", "こんにちは")
+            speed = float(os.getenv("TTS_WARMUP_SPEED", "1.0"))
+            sem = _get_infer_semaphore()
+            async with sem:
+                await asyncio.to_thread(engine.synthesize_sft_pcm, text, speaker, speed)
+            print(f"[{_ts()}] [TTS] warmup done in {time.time() - start:.2f}s", flush=True)
+        except Exception as exc:
+            print(f"[{_ts()}] [TTS] warmup failed: {exc}", flush=True)
+
     print(f"[{_ts()}] [TTS] server listening on {host}:{port}", flush=True)
     async with websockets.serve(
         websocket_handler,
@@ -146,6 +188,7 @@ async def main():
         ping_interval=None,
         max_size=None,
     ):
+        asyncio.create_task(_warmup_after_start())
         await asyncio.Future()
 
 
