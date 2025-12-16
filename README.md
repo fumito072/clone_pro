@@ -23,14 +23,37 @@ gcloud compute instances start cosyvoice-tts-server --zone=asia-east1-c --projec
 
 ### 2) GPU VMでTTSサーバー起動（8002）
 
-（ワンライナー起動）
+- ディレクトリ: `~/CosyVoice/api_server`
+- ポート: `8002`
+- まずSSHで入る（IAP推奨）:
 
 ```bash
-gcloud compute ssh cosyvoice-tts-server --zone=asia-east1-c --project=hosipro --tunnel-through-iap --command \
-'source ~/miniconda3/etc/profile.d/conda.sh && conda activate cosyvoice && cd ~/CosyVoice/api_server && \
- (lsof -tiTCP:8002 -sTCP:LISTEN | xargs -r kill -9) || true && \
- : > tts_server.log && nohup env PYTHONUNBUFFERED=1 python tts_server.py </dev/null > tts_server.log 2>&1 & \
- echo $! > tts_server.pid && sleep 1 && lsof -nP -iTCP:8002 -sTCP:LISTEN && tail -n 10 tts_server.log'
+gcloud compute ssh cosyvoice-tts-server --zone=asia-east1-c --project=hosipro --tunnel-through-iap
+```
+
+- VM内で起動する（手動手順）:
+
+```bash
+conda activate cosyvoice
+cd ~/CosyVoice/api_server
+
+# まず8002が空いてるか確認
+lsof -nP -iTCP:8002 -sTCP:LISTEN
+
+# 空いてなければ、掴んでるプロセスを止める（全部）
+lsof -tiTCP:8002 -sTCP:LISTEN | xargs -r kill
+
+# それでも残る時だけ強制kill
+lsof -tiTCP:8002 -sTCP:LISTEN | xargs -r kill -9
+
+- 停止（PIDがある場合）:
+
+```bash
+cd ~/CosyVoice/api_server
+python tts_server.py
+
+# まだ残ってたらポートから止める
+lsof -tiTCP:8002 -sTCP:LISTEN | xargs -r kill
 ```
 
 ### 3) MacでSSHトンネル（ローカル8004 → VM 8002）
@@ -69,58 +92,7 @@ export SAVE_MOUTH_OUTPUT="true"
 python controller.py
 ```
 
-## 各サーバーの立て方（要点）
 
-### 耳（STT）
-
-```bash
-cd ears_stt
-source venv/bin/activate
-python run_stt_server.py
-```
-
-### 頭（LLM）
-
-```bash
-cd head_llm
-source venv/bin/activate
-python run_llm_server.py
-```
-
-### 口（TTS / GPU VM）
-
-- ディレクトリ: `~/CosyVoice/api_server`
-- ポート: `8002`
-- まずSSHで入る（IAP推奨）:
-
-```bash
-gcloud compute ssh cosyvoice-tts-server --zone=asia-east1-c --project=hosipro --tunnel-through-iap
-```
-
-- VM内で起動する（手動手順）:
-
-```bash
-conda activate cosyvoice
-cd ~/CosyVoice/api_server
-
-# まず8002が空いてるか確認
-lsof -nP -iTCP:8002 -sTCP:LISTEN
-
-# 空いてなければ、掴んでるプロセスを止める（全部）
-lsof -tiTCP:8002 -sTCP:LISTEN | xargs -r kill
-
-# それでも残る時だけ強制kill
-lsof -tiTCP:8002 -sTCP:LISTEN | xargs -r kill -9
-
-- 停止（PIDがある場合）:
-
-```bash
-cd ~/CosyVoice/api_server
-python tts_server.py
-
-# まだ残ってたらポートから止める
-lsof -tiTCP:8002 -sTCP:LISTEN | xargs -r kill
-```
 
 ## GPU VM操作（start/stop/ssh）
 
