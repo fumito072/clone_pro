@@ -23,19 +23,71 @@ gcloud compute instances start cosyvoice-tts-server --zone=asia-east1-c --projec
 
 ### 2) GPU VMでTTSサーバー起動（8002）
 
-- ディレクトリ: `~/CosyVoice/api_server`
+**初回セットアップ（必要な場合のみ）：**
+
+他ユーザーのディレクトリから環境をコピーした場合は、以下の手順で環境を構築：
+
+```bash
+# 1. 他ユーザーのディレクトリをコピー
+# ※ YOUR_USER は自分のユーザー名に置き換え
+# ※ このコマンドは実行まで時間がかかる
+sudo cp -r /home/hoshinafumito /home/YOUR_USER/
+sudo chown -R YOUR_USER:YOUR_USER /home/YOUR_USER/hoshinafumito
+
+# 2. Miniconda3 を新規インストール
+rm -rf ~/miniconda3
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh -b -p ~/miniconda3
+~/miniconda3/bin/conda init bash
+source ~/.bashrc
+
+# 3. Conda 利用規約に同意
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+
+# 4. cosyvoice 環境を作成（Python 3.11）
+conda create -n cosyvoice python=3.11 -y
+conda activate cosyvoice
+
+# 5. requirements.txt を更新してインストール
+cd ~/hoshinafumito/CosyVoice
+sed 's/onnxruntime-gpu==1.18.0/onnxruntime-gpu==1.23.2/g' requirements.txt > requirements_updated.txt
+sed -i 's/onnxruntime==1.18.0/onnxruntime==1.23.2/g' requirements_updated.txt
+pip install -r requirements_updated.txt
+
+# 6. Git submodule を初期化
+git submodule update --init --recursive
+
+# 7. speaker_config.json のパスを修正
+# ※ YOUR_USER は自分のユーザー名に置き換え
+cd api_server
+sed -i 's|/home/hoshinafumito/|/home/YOUR_USER/hoshinafumito/|g' speaker_config.json
+
+# 8. 環境変数を .bashrc に追加
+# ※ YOUR_USER は自分のユーザー名に置き換え
+echo 'export COSYVOICE_REPO_DIR="/home/YOUR_USER/hoshinafumito/CosyVoice"' >> ~/.bashrc
+echo 'export PYTHONPATH="${PYTHONPATH}:${COSYVOICE_REPO_DIR}:${COSYVOICE_REPO_DIR}/third_party/Matcha-TTS"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+**通常起動手順：**
+
+- ディレクトリ: `~/hoshinafumito/CosyVoice/api_server`
 - ポート: `8002`
 - まずSSHで入る（IAP推奨）:
 
 ```bash
-gcloud compute ssh cosyvoice-tts-server --zone=asia-east1-c --project=hosipro --tunnel-through-iap
-```
-
 - VM内で起動する（手動手順）:
 
 ```bash
+# ※ YOUR_USER は自分のユーザー名に置き換え
 conda activate cosyvoice
-cd ~/CosyVoice/api_server
+export COSYVOICE_REPO_DIR="/home/YOUR_USER/hoshinafumito/CosyVoice"
+export PYTHONPATH="${PYTHONPATH}:${COSYVOICE_REPO_DIR}:${COSYVOICE_REPO_DIR}/third_party/Matcha-TTS"
+cd ~/hoshinafumito/CosyVoice/api_server
+export COSYVOICE_REPO_DIR="/home/csc-r196/hoshinafumito/CosyVoice"
+export PYTHONPATH="${PYTHONPATH}:${COSYVOICE_REPO_DIR}:${COSYVOICE_REPO_DIR}/third_party/Matcha-TTS"
+cd ~/hoshinafumito/CosyVoice/api_server
 
 # まず8002が空いてるか確認
 lsof -nP -iTCP:8002 -sTCP:LISTEN
@@ -46,13 +98,14 @@ lsof -tiTCP:8002 -sTCP:LISTEN | xargs -r kill
 # それでも残る時だけ強制kill
 lsof -tiTCP:8002 -sTCP:LISTEN | xargs -r kill -9
 
+# サーバー起動
+python tts_server.py
+```
+
 - 停止（PIDがある場合）:
 
 ```bash
-cd ~/CosyVoice/api_server
-python tts_server.py
-
-# まだ残ってたらポートから止める
+# ポートから止める
 lsof -tiTCP:8002 -sTCP:LISTEN | xargs -r kill
 ```
 
